@@ -1,107 +1,219 @@
-import streamlit as st
+# Revised full code for Streamlit app with consistent date format (YYYY-MM-DD)
+
 import pandas as pd
-from datetime import datetime
+import streamlit as st
 import os
+import sqlite3
+from datetime import datetime
 
-# File CSV tempat menyimpan data
-FILE_PATH = "data.csv"
+DB_FILE = "pengeluaran_kas.db"
 
-# Pastikan file CSV ada
-if not os.path.exists(FILE_PATH):
-    df = pd.DataFrame(columns=["id", "tanggal", "deskripsi_pekerjaan", "deskripsi_pengeluaran",
-                                "jumlah_barang", "unit", "harga_per_satuan", "total_harga", "keterangan"])
-    df.to_csv(FILE_PATH, index=False)
-else:
-    df = pd.read_csv(FILE_PATH)
+# Fungsi koneksi DB
+def get_connection():
+    conn = sqlite3.connect(DB_FILE)
+    return conn
 
-# Fungsi membuat ID Transaksi
+# Fungsi buat tabel jika belum ada
+def setup_database():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS kas (
+            id TEXT,
+            tanggal TEXT,
+            deskripsi_pekerjaan TEXT,
+            deskripsi_pengeluaran TEXT,
+            jumlah_barang INTEGER,
+            unit TEXT,
+            harga_per_satuan INTEGER,
+            total_harga INTEGER,
+            keterangan TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+# Fungsi menghasilkan ID transaksi
 def generate_id_transaksi(kode_pelanggan, tanggal, df):
-    tanggal_str = tanggal.strftime("%d%m%Y")
-    urutan = len(df) + 1
-    return f"{kode_pelanggan[:1].upper()}{tanggal_str}{urutan:02d}"
+    karakter_pertama = kode_pelanggan[0].upper() if kode_pelanggan else "X"
+    karakter_kedua = "1"
+    bulan_tahun = tanggal.strftime("%m%y")
+    df_filtered = df[df['id'].str.startswith(karakter_pertama + karakter_kedua + bulan_tahun)]
+    nomor_urut = len(df_filtered) + 1
+    nomor_urut_str = f"{nomor_urut:03d}"
+    return f"{karakter_pertama}{karakter_kedua}{bulan_tahun}{nomor_urut_str}"
 
-# Fungsi menyimpan data
-def save_data(row):
-    global df
-    new_df = pd.DataFrame([row], columns=df.columns)
-    df = pd.concat([df, new_df], ignore_index=True)
-    df.to_csv(FILE_PATH, index=False)
+# Fungsi konversi angka ke format Rupiah
+def format_rupiah(x):
+    try:
+        return f"Rp {x:,.0f}".replace(",", ".")
+    except:
+        return x
 
-# Fungsi mengedit data
-def edit_data(index, new_row):
-    global df
-    df.iloc[index] = new_row
-    df.to_csv(FILE_PATH, index=False)
-
-# Fungsi menghapus data
-def delete_data(index):
-    global df
-    df.drop(index, inplace=True)
-    df.reset_index(drop=True, inplace=True)
-    df.to_csv(FILE_PATH, index=False)
-
-# UI Streamlit
-st.title("Manajemen Data Transaksi")
-st.header("Input Data Baru")
-
-kode_pelanggan = st.text_input("Kode Pelanggan")
-tanggal = st.date_input("Tanggal", value=datetime.today())
-deskripsi_pekerjaan = st.text_input("Deskripsi Pekerjaan")
-deskripsi_pengeluaran = st.text_input("Deskripsi Pengeluaran")
-jumlah_barang = st.number_input("Jumlah Barang", min_value=0, step=1)
-unit = st.text_input("Unit")
-harga_per_satuan = st.number_input("Harga per Satuan", min_value=0, step=100)
-total_harga = jumlah_barang * harga_per_satuan
-keterangan = st.text_input("Keterangan")
-
-if st.button("Simpan Data"):
-    if not kode_pelanggan:
-        st.error("Kode Pelanggan harus diisi.")
-    else:
-        tanggal_db = tanggal.strftime("%Y-%m-%d")
-        id_transaksi = generate_id_transaksi(kode_pelanggan, tanggal, df)
-        row = (id_transaksi, tanggal_db, deskripsi_pekerjaan, deskripsi_pengeluaran,
-               jumlah_barang, unit, harga_per_satuan, total_harga, keterangan)
-        save_data(row)
-        st.success(f"Data ID {id_transaksi} berhasil disimpan!")
-
-st.divider()
-st.header("Kelola Data")
-
-if len(df) > 0:
+# Fungsi ambil semua data dari DB
+def load_data():
+    conn = get_connection()
+    df = pd.read_sql_query("SELECT * FROM kas", conn)
     df['tanggal'] = pd.to_datetime(df['tanggal'], errors='coerce')
+    conn.close()
+    return df
+
+# Fungsi simpan data ke DB
+def save_data(row):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO kas (id, tanggal, deskripsi_pekerjaan, deskripsi_pengeluaran,
+                         jumlah_barang, unit, harga_per_satuan, total_harga, keterangan)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", row)
+    conn.commit()
+    conn.close()
+
+# Fungsi hapus berdasarkan index di DataFrame
+def delete_data_by_index(index):
+    df = load_data()
+    if index < len(df):
+        id_to_delete = df.iloc[index]['id']
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM kas WHERE id = ?", (id_to_delete,))
+        conn.commit()
+        conn.close()
+
+# Fungsi update baris berdasarkan ID
+def update_data_by_id(data):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE kas SET
+            tanggal = ?,
+            deskripsi_pekerjaan = ?,
+            deskripsi_pengeluaran = ?,
+            jumlah_barang = ?,
+            unit = ?,
+            harga_per_satuan = ?,
+            total_harga = ?,
+            keterangan = ?
+        WHERE id = ?
+    """, data)
+    conn.commit()
+    conn.close()
+
+# Setup DB
+setup_database()
+
+# Streamlit config
+st.set_page_config(page_title="Pengeluaran Kas", layout="wide")
+st.sidebar.title("Navigasi")
+menu = st.sidebar.radio("Pilih Halaman", ["Dashboard", "Input Data", "Data & Pencarian", "Kelola Data"])
+
+# ====================== DASHBOARD ==========================
+if menu == "Dashboard":
+    st.title("📊 Dashboard Pengeluaran")
+    df = load_data()
+
+    if not df.empty:
+        total_harga = df['total_harga'].sum()
+        avg_harga = df['total_harga'].mean()
+        count = len(df)
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Total Pengeluaran", format_rupiah(total_harga))
+        col2.metric("Rata-rata Pengeluaran", format_rupiah(avg_harga))
+        col3.metric("Jumlah Transaksi", count)
+
+        df['Bulan'] = df['tanggal'].dt.to_period('M').astype(str)
+        monthly_summary = df.groupby('Bulan')['total_harga'].sum()
+        st.line_chart(monthly_summary)
+    else:
+        st.warning("Belum ada data untuk ditampilkan.")
+
+# ===================== INPUT DATA ==========================
+elif menu == "Input Data":
+    st.title("📝 Input Pengeluaran Baru")
+
+    df = load_data()
+    kode_pelanggan = st.text_input("Kode Pelanggan", max_chars=10)
+    tanggal = st.date_input("Tanggal", value=datetime.today())
+    deskripsi_pekerjaan = st.text_area("Deskripsi Pekerjaan")
+    deskripsi_pengeluaran = st.text_area("Deskripsi Pengeluaran")
+    jumlah_barang = st.number_input("Jumlah Barang", min_value=1)
+    unit = st.selectbox("Unit", ["pcs", "ea", "meter", "galon", "liter", "lot", "set", "assy", "kaleng", "pail", "unit", "lembar"])
+    harga_per_satuan = st.number_input("Harga per Satuan", min_value=0)
+    keterangan = st.text_input("Keterangan")
+    total_harga = jumlah_barang * harga_per_satuan
+
+    if st.button("Simpan Data"):
+        if not kode_pelanggan:
+            st.error("Kode Pelanggan harus diisi.")
+        else:
+            id_transaksi = generate_id_transaksi(kode_pelanggan, tanggal, df)
+            row = (id_transaksi, tanggal.strftime("%Y-%m-%d"), deskripsi_pekerjaan, deskripsi_pengeluaran,
+                   jumlah_barang, unit, harga_per_satuan, total_harga, keterangan)
+            save_data(row)
+            st.success(f"Data ID {id_transaksi} berhasil disimpan!")
+
+# =================== DATA & PENCARIAN ======================
+elif menu == "Data & Pencarian":
+    st.title("🔍 Data & Pencarian")
+    df = load_data()
+
     df_tampil = df.copy()
-    df_tampil["tanggal"] = df_tampil["tanggal"].dt.strftime("%d-%m-%Y")
+    df_tampil["harga_per_satuan"] = df_tampil["harga_per_satuan"].apply(format_rupiah)
+    df_tampil["total_harga"] = df_tampil["total_harga"].apply(format_rupiah)
+    df_tampil["tanggal"] = df_tampil["tanggal"].dt.strftime("%Y-%m-%d")
+
     st.dataframe(df_tampil)
 
-    st.subheader("Edit / Hapus Data")
-    idx = st.number_input("Pilih Index untuk Edit/Hapus", min_value=0, max_value=len(df)-1, step=1)
-    selected_row = df.iloc[idx]
+    csv = df.to_csv(index=False).encode('utf-8')
+    st.download_button("📥 Unduh CSV", csv, "pengeluaran_kas.csv", "text/csv")
 
-    with st.expander("Edit Data Ini"):
-        tanggal_value = pd.to_datetime(selected_row['tanggal'], errors='coerce')
-        if pd.isna(tanggal_value):
-            tanggal_value = datetime.today()
+# ====================== KELOLA DATA ========================
+elif menu == "Kelola Data":
+    st.title("✏️ Kelola Data")
+    df = load_data()
 
-        new_tanggal = st.date_input("Tanggal", value=tanggal_value)
-        new_row = [
-            selected_row['id'],
-            new_tanggal.strftime("%Y-%m-%d"),
-            st.text_input("Deskripsi Pekerjaan", value=selected_row['deskripsi_pekerjaan']),
-            st.text_input("Deskripsi Pengeluaran", value=selected_row['deskripsi_pengeluaran']),
-            st.number_input("Jumlah Barang", min_value=0, value=int(selected_row['jumlah_barang']), step=1),
-            st.text_input("Unit", value=selected_row['unit']),
-            st.number_input("Harga per Satuan", min_value=0, value=int(selected_row['harga_per_satuan']), step=100),
-            selected_row['jumlah_barang'] * selected_row['harga_per_satuan'],
-            st.text_input("Keterangan", value=selected_row['keterangan'])
-        ]
+    if not df.empty:
+        df_tampil = df.copy()
+        df_tampil["harga_per_satuan"] = df_tampil["harga_per_satuan"].apply(format_rupiah)
+        df_tampil["total_harga"] = df_tampil["total_harga"].apply(format_rupiah)
+        df_tampil["tanggal"] = df_tampil["tanggal"].dt.strftime("%Y-%m-%d")
 
-        if st.button("Update Data"):
-            edit_data(idx, new_row)
-            st.success("Data berhasil diperbarui!")
+        st.dataframe(df_tampil)
 
-    if st.button("Hapus Data Ini"):
-        delete_data(idx)
-        st.success("Data berhasil dihapus!")
-else:
-    st.info("Belum ada data.")
+        selected_index = st.number_input("Pilih Index untuk Edit/Hapus", min_value=0, max_value=len(df)-1, step=1)
+        selected_row = df.iloc[selected_index]
+
+        with st.expander("Edit Data Ini"):
+            tanggal_value = selected_row['tanggal']
+            if pd.isna(tanggal_value):
+                tanggal_value = datetime.today()
+            tanggal = st.date_input("Tanggal", value=pd.to_datetime(tanggal_value))
+
+            deskripsi_pekerjaan = st.text_input("Deskripsi Pekerjaan", value=selected_row['deskripsi_pekerjaan'])
+            deskripsi_pengeluaran = st.text_input("Deskripsi Pengeluaran", value=selected_row['deskripsi_pengeluaran'])
+            jumlah_barang = st.number_input("Jumlah Barang", min_value=1, value=int(selected_row['jumlah_barang']))
+            unit = st.selectbox("Unit", [
+                "pcs", "ea", "meter", "galon", "liter", "lot", "set",
+                "assy", "kaleng", "pail", "unit", "lembar"
+            ], index=[
+                "pcs", "ea", "meter", "galon", "liter", "lot", "set",
+                "assy", "kaleng", "pail", "unit", "lembar"
+            ].index(selected_row['unit']))
+            harga_per_satuan = st.number_input("Harga per Satuan", min_value=0, value=int(selected_row['harga_per_satuan']))
+            keterangan = st.text_input("Keterangan", value=selected_row['keterangan'])
+            total_harga = jumlah_barang * harga_per_satuan
+
+            if st.button("Simpan Perubahan"):
+                data = (
+                    tanggal.strftime("%Y-%m-%d"), deskripsi_pekerjaan, deskripsi_pengeluaran,
+                    jumlah_barang, unit, harga_per_satuan, total_harga, keterangan, selected_row['id']
+                )
+                update_data_by_id(data)
+                st.success("Perubahan berhasil disimpan. Silakan refresh halaman.")
+
+        if st.button("Hapus Data Ini"):
+            delete_data_by_index(selected_index)
+            st.success("Data berhasil dihapus. Silakan refresh halaman.")
+    else:
+        st.warning("Belum ada data.")
